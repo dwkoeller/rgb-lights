@@ -44,6 +44,8 @@ const char compile_date[] = __DATE__ " " __TIME__;
 
 volatile int watchDogCount = 0;
 
+Ticker ticker_fw, ticker_watchdog;
+
 bool readyForFwUpdate = false;
 
 WiFiClient espClient;
@@ -224,6 +226,9 @@ void setup() {
   // init the MQTT connection
   client.setServer(MQTT_SERVER, MQTT_PORT);
   client.setCallback(callback);
+
+  ticker_fw.attach_ms(FW_UPDATE_INTERVAL_SEC * 1000, fwTicker);
+  ticker_watchdog.attach_ms(WATCHDOG_UPDATE_INTERVAL_SEC * 1000, watchdogTicker);
 
   checkForUpdates();  
   setColor(0,0,0);
