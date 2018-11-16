@@ -13,16 +13,16 @@ const char compile_date[] = __DATE__ " " __TIME__;
 //#define WIFI_SSID "" //enter your WIFI SSID
 //#define WIFI_PASSWORD "" //enter your WIFI Password
 //#define MQTT_SERVER "" // Enter your MQTT server address or IP.
-//#define MQTT_DEVICE "" // Enter your MQTT device
 //#define MQTT_USER "" //enter your MQTT username
 //#define MQTT_PASSWORD "" //enter your password
+#define MQTT_DEVICE "gamerooom-rgb-center" // Enter your MQTT device
 #define MQTT_PORT 1883 // Enter your MQTT server port.
 #define MQTT_SOCKET_TIMEOUT 120
 #define FW_UPDATE_INTERVAL_SEC 24*3600
 #define WATCHDOG_UPDATE_INTERVAL_SEC 1
 #define WATCHDOG_RESET_INTERVAL_SEC 30
 #define UPDATE_SERVER "http://192.168.100.15/firmware/"
-#define FIRMWARE_VERSION "-1.04"
+#define FIRMWARE_VERSION "-1.05"
 #define MQTT_VERSION_PUB "gameroom/rgb_center/version"
 #define MQTT_COMPILE_PUB "gameroom/rgb_center/compile"
 
