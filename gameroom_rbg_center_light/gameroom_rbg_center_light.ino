@@ -22,7 +22,7 @@ const char compile_date[] = __DATE__ " " __TIME__;
 #define WATCHDOG_UPDATE_INTERVAL_SEC 1
 #define WATCHDOG_RESET_INTERVAL_SEC 30
 #define UPDATE_SERVER "http://192.168.100.15/firmware/"
-#define FIRMWARE_VERSION "-1.05"
+#define FIRMWARE_VERSION "-1.06"
 #define MQTT_VERSION_PUB "gameroom/rgb_center/version"
 #define MQTT_COMPILE_PUB "gameroom/rgb_center/compile"
 
@@ -245,6 +245,7 @@ void loop() {
   }
 
   client.loop();
+  watchDogCount = 0;
 }
 
 void setup_wifi() {
