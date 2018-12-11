@@ -20,11 +20,13 @@ const char compile_date[] = __DATE__ " " __TIME__;
 #define MQTT_SOCKET_TIMEOUT 120
 #define FW_UPDATE_INTERVAL_SEC 24*3600
 #define WATCHDOG_UPDATE_INTERVAL_SEC 1
-#define WATCHDOG_RESET_INTERVAL_SEC 30
+#define WATCHDOG_RESET_INTERVAL_SEC 120
 #define UPDATE_SERVER "http://192.168.100.15/firmware/"
-#define FIRMWARE_VERSION "-1.06"
+#define FIRMWARE_VERSION "-1.07"
 #define MQTT_VERSION_PUB "gameroom/rgb_right/version"
 #define MQTT_COMPILE_PUB "gameroom/rgb_right/compile"
+#define MQTT_HEARTBEAT_SUB "heartbeat/#"
+#define MQTT_HEARTBEAT_TOPIC "heartbeat"
 
 // state
 #define ROOM_LIGHT_STATE_TOPIC "gameroom/rgb_right/light/status"
@@ -116,6 +118,10 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
   for (uint8_t i = 0; i < p_length; i++) {
     payload.concat((char)p_payload[i]);
   }
+  if (String(MQTT_HEARTBEAT_TOPIC).equals(p_topic)) {
+    watchDogCount = 0;  
+    return;
+  }            
   // handle message topic
   if (String(ROOM_LIGHT_COMMAND_TOPIC).equals(p_topic)) {
     // test if the payload is equal to "ON" or "OFF"
@@ -195,6 +201,7 @@ void reconnect() {
       client.subscribe(ROOM_LIGHT_COMMAND_TOPIC);
       client.subscribe(ROOM_LIGHT_BRIGHTNESS_COMMAND_TOPIC);
       client.subscribe(ROOM_LIGHT_RGB_COMMAND_TOPIC);
+      client.subscribe(MQTT_HEARTBEAT_SUB);
       String firmwareVer = String("Firmware Version: ") + String(FIRMWARE_VERSION);
       String compileDate = String("Build Date: ") + String(compile_date);
       client.publish(MQTT_VERSION_PUB, firmwareVer.c_str(), true);
@@ -245,7 +252,6 @@ void loop() {
   }
 
   client.loop();
-  watchDogCount = 0;
 }
 
 void setup_wifi() {
@@ -365,4 +371,3 @@ void my_delay(unsigned long ms) {
     }
   }
 }
-
