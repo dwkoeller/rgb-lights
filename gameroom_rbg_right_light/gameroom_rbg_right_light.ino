@@ -21,8 +21,9 @@ const char compile_date[] = __DATE__ " " __TIME__;
 #define FW_UPDATE_INTERVAL_SEC 24*3600
 #define WATCHDOG_UPDATE_INTERVAL_SEC 1
 #define WATCHDOG_RESET_INTERVAL_SEC 120
+#define STATUS_UPDATE_INTERVAL_SEC 120
 #define UPDATE_SERVER "http://192.168.100.15/firmware/"
-#define FIRMWARE_VERSION "-1.07"
+#define FIRMWARE_VERSION "-1.08"
 #define MQTT_VERSION_PUB "gameroom/rgb_right/version"
 #define MQTT_COMPILE_PUB "gameroom/rgb_right/compile"
 #define MQTT_HEARTBEAT_SUB "heartbeat/#"
@@ -46,9 +47,10 @@ const char compile_date[] = __DATE__ " " __TIME__;
 
 volatile int watchDogCount = 0;
 
-Ticker ticker_fw, ticker_watchdog;
+Ticker ticker_fw, ticker_watchdog, ticker_status;
 
 bool readyForFwUpdate = false;
+bool poweredOn = false;
 
 WiFiClient espClient;
 
@@ -126,6 +128,7 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
   if (String(ROOM_LIGHT_COMMAND_TOPIC).equals(p_topic)) {
     // test if the payload is equal to "ON" or "OFF"
     if (payload.equals(String(LIGHT_ON))) {
+      poweredOn = true;
       if (m_rgb_state != true) {
         m_rgb_state = true;
         setColor(m_rgb_red, m_rgb_green, m_rgb_blue);
@@ -133,6 +136,7 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
         publishRGBState();
       }
     } else if (payload.equals(String(LIGHT_OFF))) {
+      poweredOn = false;
       if (m_rgb_state != false) {
         m_rgb_state = false;
         setColor(0,0,0);
@@ -236,6 +240,7 @@ void setup() {
 
   ticker_fw.attach_ms(FW_UPDATE_INTERVAL_SEC * 1000, fwTicker);
   ticker_watchdog.attach_ms(WATCHDOG_UPDATE_INTERVAL_SEC * 1000, watchdogTicker);
+  ticker_status.attach_ms(STATUS_UPDATE_INTERVAL_SEC * 1000, statusTicker);
 
   checkForUpdates();  
   setColor(0,0,0);
@@ -287,6 +292,17 @@ void setup_wifi() {
 // FW update ticker
 void fwTicker() {
   readyForFwUpdate = true;
+}
+
+void statusTicker() {
+  String status;
+  if (poweredOn > 0) {
+    status = "ON";
+  }
+  else {
+    status = "OFF";
+  }
+  client.publish(ROOM_LIGHT_STATE_TOPIC, status.c_str());
 }
 
 // Watchdog update ticker
