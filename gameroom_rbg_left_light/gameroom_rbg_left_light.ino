@@ -1,11 +1,3 @@
-#include <ESP8266WiFi.h>
-#include <WiFiManager.h>
-#include <PubSubClient.h>
-#include <Ticker.h>
-#include <ESP8266HTTPClient.h>
-#include <ESP8266httpUpdate.h>
-#include "credentials.h" // Place credentials for wifi and mqtt in this file
-
 //This can be used to output the date the code was compiled
 const char compile_date[] = __DATE__ " " __TIME__;
 
@@ -15,19 +7,20 @@ const char compile_date[] = __DATE__ " " __TIME__;
 //#define MQTT_SERVER "" // Enter your MQTT server address or IP.
 //#define MQTT_USER "" //enter your MQTT username
 //#define MQTT_PASSWORD "" //enter your password
-#define MQTT_DEVICE "gameroom-rgb-left" // Enter your MQTT device
-#define MQTT_PORT 1883 // Enter your MQTT server port.
+#define MQTT_DEVICE "gamerooom-rgb-left" // Enter your MQTT device
+#define MQTT_SSL_PORT 8883 // Enter your MQTT server port.
 #define MQTT_SOCKET_TIMEOUT 120
 #define FW_UPDATE_INTERVAL_SEC 24*3600
 #define WATCHDOG_UPDATE_INTERVAL_SEC 1
 #define WATCHDOG_RESET_INTERVAL_SEC 120
 #define STATUS_UPDATE_INTERVAL_SEC 120
 #define UPDATE_SERVER "http://192.168.100.15/firmware/"
-#define FIRMWARE_VERSION "-1.08"
+#define FIRMWARE_VERSION "-1.20"
 #define MQTT_VERSION_PUB "gameroom/rgb_left/version"
 #define MQTT_COMPILE_PUB "gameroom/rgb_left/compile"
 #define MQTT_HEARTBEAT_SUB "heartbeat/#"
 #define MQTT_HEARTBEAT_TOPIC "heartbeat"
+#define MQTT_HEARTBEAT_PUB "gameroom/rgb_left/heartbeat"
 
 // state
 #define ROOM_LIGHT_STATE_TOPIC "gameroom/rgb_left/light/status"
@@ -45,14 +38,22 @@ const char compile_date[] = __DATE__ " " __TIME__;
 #define LIGHT_ON "ON"
 #define LIGHT_OFF "OFF"
 
-volatile int watchDogCount = 0;
+#define WATCHDOG_PIN 5  // D1
+ 
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <Ticker.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266httpUpdate.h>
+#include "credentials.h" // Place credentials for wifi and mqtt in this file
+#include "certificates.h" // Place certificates for mqtt in this file
 
-Ticker ticker_fw, ticker_watchdog, ticker_status;
+Ticker ticker_fw, ticker_status;
 
 bool readyForFwUpdate = false;
 bool poweredOn = false;
 
-WiFiClient espClient;
+WiFiClientSecure espClient;
 
 // variables used to store the state, the brightness and the color of the light
 boolean m_rgb_state = false;
@@ -70,8 +71,9 @@ const PROGMEM uint8_t RGB_LIGHT_BLUE_PIN = D5; // D6
 const uint8_t MSG_BUFFER_SIZE = 20;
 char m_msg_buffer[MSG_BUFFER_SIZE]; 
 
-WiFiClient wifiClient;
-PubSubClient client(wifiClient);
+PubSubClient client(espClient);
+
+#include "common.h"
 
 // function called to adapt the brightness and the color of the led
 void setColor(uint8_t p_red, uint8_t p_green, uint8_t p_blue) {
@@ -121,13 +123,15 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
     payload.concat((char)p_payload[i]);
   }
   if (String(MQTT_HEARTBEAT_TOPIC).equals(p_topic)) {
-    watchDogCount = 0;  
+    resetWatchdog();
+    client.publish(MQTT_HEARTBEAT_PUB, "Heartbeat Received");  
     return;
-  }          
+  }        
   // handle message topic
   if (String(ROOM_LIGHT_COMMAND_TOPIC).equals(p_topic)) {
     // test if the payload is equal to "ON" or "OFF"
     if (payload.equals(String(LIGHT_ON))) {
+      poweredOn = true;
       if (m_rgb_state != true) {
         m_rgb_state = true;
         setColor(m_rgb_red, m_rgb_green, m_rgb_blue);
@@ -135,6 +139,7 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
         publishRGBState();
       }
     } else if (payload.equals(String(LIGHT_OFF))) {
+      poweredOn = false;
       if (m_rgb_state != false) {
         m_rgb_state = false;
         setColor(0,0,0);
@@ -185,40 +190,6 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
   }
 }
 
-void reconnect() {
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.println("INFO: Attempting MQTT connection...");
-    // Attempt to connect
-    if (client.connect(MQTT_DEVICE, MQTT_USER, MQTT_PASSWORD)) {
-      Serial.println("INFO: connected");
-      
-      // Once connected, publish an announcement...
-      // publish the initial values
-      publishRGBState();
-      publishRGBBrightness();
-      publishRGBColor();
-
-      // ... and resubscribe
-      client.subscribe(ROOM_LIGHT_COMMAND_TOPIC);
-      client.subscribe(ROOM_LIGHT_BRIGHTNESS_COMMAND_TOPIC);
-      client.subscribe(ROOM_LIGHT_RGB_COMMAND_TOPIC);
-      client.subscribe(MQTT_HEARTBEAT_SUB);
-      String firmwareVer = String("Firmware Version: ") + String(FIRMWARE_VERSION);
-      String compileDate = String("Build Date: ") + String(compile_date);
-      client.publish(MQTT_VERSION_PUB, firmwareVer.c_str(), true);
-      client.publish(MQTT_COMPILE_PUB, compileDate.c_str(), true);
-      
-    } else {
-      Serial.print("ERROR: failed, rc=");
-      Serial.print(client.state());
-      Serial.println("DEBUG: try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      my_delay(5000);
-    }
-  }
-}
-
 void setup() {
   // init the serial
   Serial.begin(115200);
@@ -233,11 +204,10 @@ void setup() {
   setup_wifi();
 
   // init the MQTT connection
-  client.setServer(MQTT_SERVER, MQTT_PORT);
+  client.setServer(MQTT_SERVER, MQTT_SSL_PORT);
   client.setCallback(callback);
 
   ticker_fw.attach_ms(FW_UPDATE_INTERVAL_SEC * 1000, fwTicker);
-  ticker_watchdog.attach_ms(WATCHDOG_UPDATE_INTERVAL_SEC * 1000, watchdogTicker);
   ticker_status.attach_ms(STATUS_UPDATE_INTERVAL_SEC * 1000, statusTicker);
 
   checkForUpdates();  
@@ -247,6 +217,18 @@ void setup() {
 void loop() {
   if (!client.connected()) {
     reconnect();
+    // Once connected, publish an announcement...
+    // publish the initial values
+    publishRGBState();
+    publishRGBBrightness();
+    publishRGBColor();
+
+    // ... and resubscribe
+    client.subscribe(ROOM_LIGHT_COMMAND_TOPIC);
+    client.subscribe(ROOM_LIGHT_BRIGHTNESS_COMMAND_TOPIC);
+    client.subscribe(ROOM_LIGHT_RGB_COMMAND_TOPIC);
+    client.subscribe(MQTT_HEARTBEAT_SUB);
+
   }
 
   if(readyForFwUpdate) {
@@ -255,41 +237,6 @@ void loop() {
   }
 
   client.loop();
-}
-
-void setup_wifi() {
-  int count = 0;
-  my_delay(50);
-
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(WIFI_SSID);
-  
-  WiFi.mode(WIFI_STA);
-  WiFi.hostname(MQTT_DEVICE);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    my_delay(250);
-    Serial.print(".");
-    count++;
-    if(count > 50) {
-      WiFiManager wifiManager;
-      wifiManager.resetSettings();
-      wifiManager.autoConnect();
-    }
-  }
-
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
-  
-}
-
-// FW update ticker
-void fwTicker() {
-  readyForFwUpdate = true;
 }
 
 void statusTicker() {
@@ -301,87 +248,4 @@ void statusTicker() {
     status = "OFF";
   }
   client.publish(ROOM_LIGHT_STATE_TOPIC, status.c_str());
-}
-
-// Watchdog update ticker
-void watchdogTicker() {
-  watchDogCount++;
-  if(watchDogCount >= WATCHDOG_RESET_INTERVAL_SEC) {
-    Serial.println("Reset system");
-    ESP.restart();  
-  }
-}
-
-String WiFi_macAddressOf(IPAddress aIp) {
-  if (aIp == WiFi.localIP())
-    return WiFi.macAddress();
-
-  if (aIp == WiFi.softAPIP())
-    return WiFi.softAPmacAddress();
-
-  return String("00-00-00-00-00-00");
-}
-
-void checkForUpdates() {
-
-  String clientMAC = WiFi_macAddressOf(espClient.localIP());
-
-  Serial.print("MAC: ");
-  Serial.println(clientMAC);
-  clientMAC.replace(":", "-");
-  String filename = clientMAC.substring(9);
-  String firmware_URL = String(UPDATE_SERVER) + filename + String(FIRMWARE_VERSION);
-  String current_firmware_version_URL = String(UPDATE_SERVER) + filename + String("-current_version");
-
-  HTTPClient http;
-
-  http.begin(current_firmware_version_URL);
-  int httpCode = http.GET();
-  
-  if ( httpCode == 200 ) {
-
-    String newFirmwareVersion = http.getString();
-    newFirmwareVersion.trim();
-    
-    Serial.print( "Current firmware version: " );
-    Serial.println( FIRMWARE_VERSION );
-    Serial.print( "Available firmware version: " );
-    Serial.println( newFirmwareVersion );
-    
-    if(newFirmwareVersion.substring(1).toFloat() > String(FIRMWARE_VERSION).substring(1).toFloat()) {
-      Serial.println( "Preparing to update" );
-      String new_firmware_URL = String(UPDATE_SERVER) + filename + newFirmwareVersion + ".bin";
-      Serial.println(new_firmware_URL);
-      t_httpUpdate_return ret = ESPhttpUpdate.update( new_firmware_URL );
-
-      switch(ret) {
-        case HTTP_UPDATE_FAILED:
-          Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
-          break;
-
-        case HTTP_UPDATE_NO_UPDATES:
-          Serial.println("HTTP_UPDATE_NO_UPDATES");
-         break;
-      }
-    }
-    else {
-      Serial.println("Already on latest firmware");  
-    }
-  }
-  else {
-    Serial.print("GET RC: ");
-    Serial.println(httpCode);
-  }
-}
-
-void my_delay(unsigned long ms) {
-  uint32_t start = micros();
-
-  while (ms > 0) {
-    yield();
-    while ( ms > 0 && (micros() - start) >= 1000) {
-      ms--;
-      start += 1000;
-    }
-  }
 }
