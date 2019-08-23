@@ -15,7 +15,7 @@ const char compile_date[] = __DATE__ " " __TIME__;
 #define WATCHDOG_RESET_INTERVAL_SEC 120
 #define STATUS_UPDATE_INTERVAL_SEC 120
 #define UPDATE_SERVER "http://192.168.100.15/firmware/"
-#define FIRMWARE_VERSION "-1.20"
+#define FIRMWARE_VERSION "-1.30"
 #define MQTT_VERSION_PUB "gameroom/rgb_left/version"
 #define MQTT_COMPILE_PUB "gameroom/rgb_left/compile"
 #define MQTT_HEARTBEAT_SUB "heartbeat/#"
