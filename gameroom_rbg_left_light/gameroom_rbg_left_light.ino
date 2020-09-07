@@ -8,33 +8,24 @@ const char compile_date[] = __DATE__ " " __TIME__;
 //#define MQTT_USER "" //enter your MQTT username
 //#define MQTT_PASSWORD "" //enter your password
 #define MQTT_DEVICE "gamerooom-rgb-left" // Enter your MQTT device
+#define MQTT_DEVICE_NAME "Gameroom TV Left"
 #define MQTT_SSL_PORT 8883 // Enter your MQTT server port.
 #define MQTT_SOCKET_TIMEOUT 120
 #define FW_UPDATE_INTERVAL_SEC 24*3600
-#define WATCHDOG_UPDATE_INTERVAL_SEC 1
-#define WATCHDOG_RESET_INTERVAL_SEC 120
 #define STATUS_UPDATE_INTERVAL_SEC 120
-#define UPDATE_SERVER "http://192.168.100.15/firmware/"
-#define FIRMWARE_VERSION "-1.30"
-#define MQTT_VERSION_PUB "gameroom/rgb_left/version"
-#define MQTT_COMPILE_PUB "gameroom/rgb_left/compile"
+#define FIRMWARE_VERSION "-2.01"
+
 #define MQTT_HEARTBEAT_SUB "heartbeat/#"
 #define MQTT_HEARTBEAT_TOPIC "heartbeat"
-#define MQTT_HEARTBEAT_PUB "gameroom/rgb_left/heartbeat"
+#define MQTT_UPDATE_REQUEST "update"
+#define MQTT_DISCOVERY_LIGHT_PREFIX  "homeassistant/light/"
+#define MQTT_DISCOVERY_SENSOR_PREFIX  "homeassistant/sensor/"
+#define HA_TELEMETRY "ha"
 
-// state
-#define ROOM_LIGHT_STATE_TOPIC "gameroom/rgb_left/light/status"
-#define ROOM_LIGHT_COMMAND_TOPIC "gameroom/rgb_left/light/switch"
+String LightCommandTopic = String(MQTT_DISCOVERY_LIGHT_PREFIX) + MQTT_DEVICE + "/command";
+String LightBrightnessCommandTopic = String(MQTT_DISCOVERY_LIGHT_PREFIX) + MQTT_DEVICE + "/brightness_command";
+String LightRGBCommandTopic = String(MQTT_DISCOVERY_LIGHT_PREFIX) + MQTT_DEVICE + "/rgb_command";
 
-// brightness
-#define ROOM_LIGHT_BRIGHTNESS_STATE_TOPIC "gameroom/rgb_left/brightness/status"
-#define ROOM_LIGHT_BRIGHTNESS_COMMAND_TOPIC "gameroom/rgb_left/brightness/set"
-
-// colors (rgb)
-#define ROOM_LIGHT_RGB_STATE_TOPIC "gameroom/rgb_left/rgb/status"
-#define ROOM_LIGHT_RGB_COMMAND_TOPIC "gameroom/rgb_left/rgb/set"
-
-// payloads by default (on/off)
 #define LIGHT_ON "ON"
 #define LIGHT_OFF "OFF"
 
@@ -52,6 +43,7 @@ Ticker ticker_fw, ticker_status;
 
 bool readyForFwUpdate = false;
 bool poweredOn = false;
+bool registered = false;
 
 WiFiClientSecure espClient;
 
@@ -97,22 +89,22 @@ void setColor(uint8_t p_red, uint8_t p_green, uint8_t p_blue) {
 // function called to publish the state of the led (on/off)
 void publishRGBState() {
   if (m_rgb_state) {
-    client.publish(ROOM_LIGHT_STATE_TOPIC, LIGHT_ON, true);
+    updateLightState(MQTT_DEVICE, LIGHT_ON);
   } else {
-    client.publish(ROOM_LIGHT_STATE_TOPIC, LIGHT_OFF, true);
+    updateLightState(MQTT_DEVICE, LIGHT_OFF);
   }
 }
 
 // function called to publish the brightness of the led (0-100)
 void publishRGBBrightness() {
   snprintf(m_msg_buffer, MSG_BUFFER_SIZE, "%d", m_rgb_brightness);
-  client.publish(ROOM_LIGHT_BRIGHTNESS_STATE_TOPIC, m_msg_buffer, true);
+  updateLightBrightnessState(MQTT_DEVICE, m_msg_buffer);
 }
 
 // function called to publish the colors of the led (xx(x),xx(x),xx(x))
 void publishRGBColor() {
   snprintf(m_msg_buffer, MSG_BUFFER_SIZE, "%d,%d,%d", m_rgb_red, m_rgb_green, m_rgb_blue);
-  client.publish(ROOM_LIGHT_RGB_STATE_TOPIC, m_msg_buffer, true);
+  updateLightRGBState(MQTT_DEVICE, m_msg_buffer);
 }
 
 // function called when a MQTT message arrived
@@ -124,11 +116,14 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
   }
   if (String(MQTT_HEARTBEAT_TOPIC).equals(p_topic)) {
     resetWatchdog();
-    client.publish(MQTT_HEARTBEAT_PUB, "Heartbeat Received");  
+    updateTelemetry(payload);
+    if (payload.equals(String(MQTT_UPDATE_REQUEST))) {
+      checkForUpdates();
+    }    
     return;
   }        
   // handle message topic
-  if (String(ROOM_LIGHT_COMMAND_TOPIC).equals(p_topic)) {
+  if (LightCommandTopic.equals(p_topic)) {
     // test if the payload is equal to "ON" or "OFF"
     if (payload.equals(String(LIGHT_ON))) {
       poweredOn = true;
@@ -147,7 +142,7 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
         publishRGBState();
       }
     }
-  } else if (String(ROOM_LIGHT_BRIGHTNESS_COMMAND_TOPIC).equals(p_topic)) {
+  } else if (LightBrightnessCommandTopic.equals(p_topic)) {
     uint8_t brightness = payload.toInt();
     if (brightness < 0 || brightness > 100) {
       // do nothing...
@@ -158,7 +153,7 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
       Serial.println("setColor Light ON " + String(m_rgb_red) + " " + String(m_rgb_green) + " " + String(m_rgb_blue));
       publishRGBBrightness();
     }
-  } else if (String(ROOM_LIGHT_RGB_COMMAND_TOPIC).equals(p_topic)) {
+  } else if (LightRGBCommandTopic.equals(p_topic)) {
     // get the position of the first and second commas
     uint8_t firstIndex = payload.indexOf(',');
     uint8_t lastIndex = payload.lastIndexOf(',');
@@ -191,19 +186,31 @@ void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
 }
 
 void setup() {
-  // init the serial
   Serial.begin(115200);
 
   // init the RGB led
   pinMode(RGB_LIGHT_BLUE_PIN, OUTPUT);
   pinMode(RGB_LIGHT_RED_PIN, OUTPUT);
   pinMode(RGB_LIGHT_GREEN_PIN, OUTPUT);
+
+  pinMode(WATCHDOG_PIN, OUTPUT);
    
   analogWriteRange(255);
 
   setup_wifi();
 
-  // init the MQTT connection
+  IPAddress result;
+  int err = WiFi.hostByName(MQTT_SERVER, result) ;
+  if(err == 1){
+        Serial.print("MQTT Server IP address: ");
+        Serial.println(result);
+        MQTTServerIP = result.toString();
+  } else {
+        Serial.print("Error code: ");
+        Serial.println(err);
+  }  
+
+  client.setBufferSize(2048);  
   client.setServer(MQTT_SERVER, MQTT_SSL_PORT);
   client.setCallback(callback);
 
@@ -212,9 +219,12 @@ void setup() {
 
   checkForUpdates();  
   setColor(0,0,0);
+  resetWatchdog();
 }
 
 void loop() {
+  client.loop();
+  
   if (!client.connected()) {
     reconnect();
     // Once connected, publish an announcement...
@@ -224,9 +234,9 @@ void loop() {
     publishRGBColor();
 
     // ... and resubscribe
-    client.subscribe(ROOM_LIGHT_COMMAND_TOPIC);
-    client.subscribe(ROOM_LIGHT_BRIGHTNESS_COMMAND_TOPIC);
-    client.subscribe(ROOM_LIGHT_RGB_COMMAND_TOPIC);
+    client.subscribe(LightCommandTopic.c_str());
+    client.subscribe(LightBrightnessCommandTopic.c_str());
+    client.subscribe(LightRGBCommandTopic.c_str());
     client.subscribe(MQTT_HEARTBEAT_SUB);
 
   }
@@ -236,7 +246,13 @@ void loop() {
     checkForUpdates();
   }
 
-  client.loop();
+  if (! registered) {
+    registerTelemetry();
+    updateTelemetry("Unknown");
+    createLight(MQTT_DEVICE, MQTT_DEVICE_NAME);
+    registered = true;
+  }
+  
 }
 
 void statusTicker() {
@@ -247,5 +263,60 @@ void statusTicker() {
   else {
     status = "OFF";
   }
-  client.publish(ROOM_LIGHT_STATE_TOPIC, status.c_str());
+  updateLightState(MQTT_DEVICE, status.c_str());
+}
+
+void createLight(String light, String light_name) {
+  String topic = String(MQTT_DISCOVERY_LIGHT_PREFIX) + light + "/config";
+  String message = String("{\"name\": \"") + light_name +
+                   String("\", \"retain\": \"true") +
+                   String("\", \"unique_id\": \"") + light + getUUID() +
+                   String("\", \"optimistic\": \"false") +
+                   String("\", \"rgb_state_topic\": \"") + String(MQTT_DISCOVERY_LIGHT_PREFIX) + light +
+                   String("/rgb_state\", \"rgb_command_topic\": \"") + String(MQTT_DISCOVERY_LIGHT_PREFIX) + light +
+                   String("/rgb_command\", \"brightness_state_topic\": \"") + String(MQTT_DISCOVERY_LIGHT_PREFIX) + light +
+                   String("/brightness_state\", \"brightness_command_topic\": \"") + String(MQTT_DISCOVERY_LIGHT_PREFIX) + light +
+                   String("/brightness_command\", \"command_topic\": \"") + String(MQTT_DISCOVERY_LIGHT_PREFIX) + light +
+                   String("/command\", \"state_topic\": \"") + String(MQTT_DISCOVERY_LIGHT_PREFIX) + light +
+                   String("/state\"}");
+  Serial.print(F("MQTT - "));
+  Serial.print(topic);
+  Serial.print(F(" : "));
+  Serial.println(message.c_str());
+
+  client.publish(topic.c_str(), message.c_str(), true);
+
+}
+
+void updateLightState(String light, String state) {
+  String topic = String(MQTT_DISCOVERY_LIGHT_PREFIX) + light + "/state";
+
+  Serial.print(F("MQTT - "));
+  Serial.print(topic);
+  Serial.print(F(" : "));
+  Serial.println(state);
+  client.publish(topic.c_str(), state.c_str(), true);
+
+}
+
+void updateLightBrightnessState(String light, String state) {
+  String topic = String(MQTT_DISCOVERY_LIGHT_PREFIX) + light + "/brightness_state";
+
+  Serial.print(F("MQTT - "));
+  Serial.print(topic);
+  Serial.print(F(" : "));
+  Serial.println(state);
+  client.publish(topic.c_str(), state.c_str(), true);
+
+}
+
+void updateLightRGBState(String light, String state) {
+  String topic = String(MQTT_DISCOVERY_LIGHT_PREFIX) + light + "/rgb_state";
+
+  Serial.print(F("MQTT - "));
+  Serial.print(topic);
+  Serial.print(F(" : "));
+  Serial.println(state);
+  client.publish(topic.c_str(), state.c_str(), true);
+
 }
